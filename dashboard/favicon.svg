@@ -1,0 +1,16 @@
+<svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+  <!-- Leather notebook in pixel art style -->
+  <rect x="0" y="0" width="48" height="48" fill="#8B4513"/>
+  <rect x="8" y="4" width="36" height="40" fill="#f8f1e0"/>
+  <!-- Notebook binding -->
+  <rect x="4" y="4" width="4" height="40" fill="#4b3621"/>
+  <rect x="4" y="8" width="4" height="4" fill="#654321"/>
+  <rect x="4" y="16" width="4" height="4" fill="#654321"/>
+  <rect x="4" y="24" width="4" height="4" fill="#654321"/>
+  <rect x="4" y="32" width="4" height="4" fill="#654321"/>
+  <!-- Notebook lines -->
+  <rect x="12" y="12" width="28" height="1" fill="#d6c6a5"/>
+  <rect x="12" y="20" width="28" height="1" fill="#d6c6a5"/>
+  <rect x="12" y="28" width="28" height="1" fill="#d6c6a5"/>
+  <rect x="12" y="36" width="28" height="1" fill="#d6c6a5"/>
+</svg>

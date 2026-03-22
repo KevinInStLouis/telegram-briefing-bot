@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.env
+.venv
+env/
+ENV/
+
+# Databases (local data, not source code)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Runtime state & data files (these change constantly)
+*.json
+*.jsonl
+!package.json  # If you have one
+brain_state.json
+telegram_state.json
+outbox.jsonl
+inbox.jsonl
+*.save
+
+# Logs
+logs/
+*.log
+log.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Backups (you have many .save files)
+*.save
+*.bak
+*.backup
+
+# Local testing files
+test_*.py
+debug_*.py
+*_deprecated.py
+*_depreciated.py
+
+# Large directories
+memory/
+stevens/
+shared/
+dailyBriefing/
