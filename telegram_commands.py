@@ -12,6 +12,7 @@ from memories import (
     format_memory_for_telegram,
     list_memories,
 )
+from weather_importer import import_weather_memory
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,8 @@ HELP_TEXT = """At your service. Current commands:
 /ping - confirm the bot is awake
 /remember <text> - save a memory
 /memories [limit] - show recent memories
+/memories weather - show weather memories
+/weather - import today's weather memory
 /forget <id> - delete a memory
 /display - refresh the Pico display"""
 
@@ -59,11 +62,22 @@ def _recent_memory_display_state(memory: Memory | None):
             line3="Awaiting orders",
         )
 
+    source = "weather" if memory.createdBy == "weather" else "notebook"
+    line1 = "Weather noted" if source == "weather" else "Recent memory"
     return status_state(
-        source="notebook",
-        line1="Recent memory",
+        source=source,
+        line1=line1,
         line2=memory.text,
         line3=memory.id,
+    )
+
+
+def _weather_display_state(memory: Memory):
+    return status_state(
+        source="weather",
+        line1="Weather imported",
+        line2=memory.text,
+        line3=memory.date or memory.id,
     )
 
 
@@ -71,9 +85,9 @@ def handle_telegram_command(message: str) -> CommandResult:
     """
     Handle Stevens' deterministic Telegram command layer.
 
-    This is intentionally narrow. It proves Telegram -> SQLite -> Telegram
-    and now Telegram -> compact display state before local LLM behavior is
-    reintroduced.
+    This is intentionally narrow. It proves Telegram -> SQLite -> Telegram,
+    Telegram -> compact display state, and deterministic importer -> memory
+    before local LLM behavior is reintroduced.
     """
     command, arg = _split_command(message)
 
@@ -82,7 +96,7 @@ def handle_telegram_command(message: str) -> CommandResult:
             handled=True,
             text=(
                 "I am presently operating in command mode. "
-                "Use /remember <text>, /memories, /forget <id>, /display, or /ping."
+                "Use /remember <text>, /memories, /weather, /forget <id>, /display, or /ping."
             ),
         )
 
@@ -107,6 +121,25 @@ def handle_telegram_command(message: str) -> CommandResult:
                 f"{_display_result_text(display_result)}"
             ),
             kind="memory_saved",
+        )
+
+    if command == "/weather":
+        try:
+            memory = import_weather_memory()
+        except Exception as exc:
+            return CommandResult(
+                handled=True,
+                text=f"Weather import failed: {exc}",
+                kind="weather_failed",
+            )
+        display_result = send_display_state(_weather_display_state(memory))
+        return CommandResult(
+            handled=True,
+            text=(
+                f"Weather memory saved.\n{format_memory_for_telegram(memory)}\n\n"
+                f"{_display_result_text(display_result)}"
+            ),
+            kind="weather_imported",
         )
 
     if command == "/memories":
