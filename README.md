@@ -25,12 +25,19 @@ python -m alfred.main
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
+pip install httpx python-dotenv
 python scripts/init_db.py
 ```
 
-Edit `.env`, then run:
+Configure environment variables before running:
+
+```bash
+export TELEGRAM_BOT_TOKEN=replace-with-token
+export OLLAMA_URL=http://127.0.0.1:11434/api/generate
+export OLLAMA_MODEL=smollm2:135m-instruct-Q4_K_S
+```
+
+Then run:
 
 ```bash
 python -m alfred.main
