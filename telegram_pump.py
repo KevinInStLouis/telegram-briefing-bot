@@ -1,10 +1,10 @@
 # telegram_pump.py
 from __future__ import annotations
 
-import os
+import asyncio
 import json
 import logging
-import asyncio
+import os
 from datetime import datetime
 from typing import Any
 
@@ -12,10 +12,10 @@ import httpx
 from dotenv import load_dotenv
 
 from telegram_store import (
-    load_state,
-    save_state,
     append_inbox,
+    load_state,
     read_outbox_all,
+    save_state,
     write_outbox_all,
 )
 
@@ -30,14 +30,42 @@ if not TOKEN or ":" not in TOKEN:
 API_BASE = f"https://api.telegram.org/bot{TOKEN}"
 HTTP_TIMEOUT = 30
 
+# Optional safety rail. When TELEGRAM_CHAT_ID is set, Stevens only ingests
+# messages from that chat. This keeps the appliance single-household by default.
+_ALLOWED_CHAT_ID_RAW = os.getenv("TELEGRAM_CHAT_ID")
+ALLOWED_CHAT_ID = int(_ALLOWED_CHAT_ID_RAW) if _ALLOWED_CHAT_ID_RAW else None
+
+TELEGRAM_SEND_KEYS = {
+    "chat_id",
+    "text",
+    "parse_mode",
+    "disable_web_page_preview",
+    "disable_notification",
+    "reply_to_message_id",
+    "allow_sending_without_reply",
+}
+
 
 def _is_text_message(update: dict[str, Any]) -> bool:
     msg = update.get("message") or update.get("edited_message")
     return bool(msg and (msg.get("text") or msg.get("caption")))
 
 
+def _message_from_update(update: dict[str, Any]) -> dict[str, Any]:
+    return update.get("message") or update.get("edited_message") or {}
+
+
+def _is_allowed_chat(chat_id: Any) -> bool:
+    if ALLOWED_CHAT_ID is None:
+        return True
+    try:
+        return int(chat_id) == ALLOWED_CHAT_ID
+    except (TypeError, ValueError):
+        return False
+
+
 async def fetch_updates(client: httpx.AsyncClient, offset: int) -> list[dict[str, Any]]:
-    # short poll (not long poll) because cron runs it periodically
+    # Short polling is deliberate here. Cron/systemd can run this periodically.
     payload = {
         "offset": offset,
         "limit": 100,
@@ -53,7 +81,9 @@ async def fetch_updates(client: httpx.AsyncClient, offset: int) -> list[dict[str
 
 
 async def send_message(client: httpx.AsyncClient, item: dict[str, Any]) -> None:
-    r = await client.post(f"{API_BASE}/sendMessage", json=item)
+    # Local queue metadata such as "kind" is for Stevens, not Telegram.
+    payload = {key: value for key, value in item.items() if key in TELEGRAM_SEND_KEYS}
+    r = await client.post(f"{API_BASE}/sendMessage", json=payload)
     r.raise_for_status()
     data = r.json()
     if not data.get("ok"):
@@ -66,34 +96,50 @@ async def main() -> None:
     offset = last_update_id + 1 if last_update_id else 0
 
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        # 1) FETCH inbound
+        # 1) Fetch inbound Telegram messages into Stevens' local inbox.
         updates = await fetch_updates(client, offset=offset)
         logging.info("Fetched %d updates", len(updates))
 
         max_update_id = last_update_id
-        for upd in updates:
-            uid = int(upd.get("update_id", 0))
-            max_update_id = max(max_update_id, uid)
+        appended = 0
+        ignored = 0
 
-            # Store everything (or filter)
-            msg = upd.get("message") or upd.get("edited_message") or {}
+        for update in updates:
+            update_id = int(update.get("update_id", 0))
+            max_update_id = max(max_update_id, update_id)
+
+            if not _is_text_message(update):
+                ignored += 1
+                continue
+
+            msg = _message_from_update(update)
             chat = msg.get("chat") or {}
+            chat_id = chat.get("id")
+
+            if not _is_allowed_chat(chat_id):
+                ignored += 1
+                continue
+
+            sender = msg.get("from") or {}
             record = {
                 "ts": datetime.now().isoformat(timespec="seconds"),
-                "update_id": uid,
-                "chat_id": chat.get("id"),
-                "from": (msg.get("from") or {}).get("username") or (msg.get("from") or {}).get("first_name"),
+                "update_id": update_id,
+                "chat_id": chat_id,
+                "from": sender.get("username") or sender.get("first_name"),
                 "text": msg.get("text") or msg.get("caption") or "",
-                "raw": upd,  # keep full payload for debugging
+                "raw": update,
             }
             append_inbox(record)
+            appended += 1
 
         if max_update_id != last_update_id:
             state["last_update_id"] = max_update_id
             save_state(state)
             logging.info("Advanced offset to update_id=%d", max_update_id)
 
-        # 2) SEND outbound queue
+        logging.info("Inbox appended=%d ignored=%d", appended, ignored)
+
+        # 2) Send queued outbound messages.
         outbox = read_outbox_all()
         if not outbox:
             logging.info("Outbox empty")
@@ -107,7 +153,7 @@ async def main() -> None:
                 await send_message(client, item)
                 sent += 1
             except Exception as e:
-                # Keep unsent items for next run
+                # Keep unsent items for next run.
                 logging.error("Send failed; keeping in outbox. Error: %s", e)
                 remaining.append(item)
 
