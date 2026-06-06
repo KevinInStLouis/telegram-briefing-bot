@@ -1,45 +1,27 @@
 # cron_daily_brief.py
-
 from __future__ import annotations
 
-import os
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from dotenv import load_dotenv
 
-from alfred.daily_brief import send_daily_briefing
+from daily_brief import queue_daily_brief
+
 
 def cron_daily_brief() -> None:
-	"""
-	Python analogue of the TypeScript cronDailyBrief.
+    """Queue one deterministic daily briefing for Telegram.
 
-	Designed to be called from cron or systemd:
-		- reads TELEGRAM_CHAT_ID from environment
-		- Uses 'today' in your local timezone
-		' Calls Send_Daily_breifing(chat_id, today)
-	"""
-	chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-	if not chat_id:
-		print("TELEGRAM_CHAT_ID is not configured.")
-		return
+    This script is intentionally thin so cron/systemd can call it. Delivery is
+    still handled by telegram_pump.py, preserving the inbox/outbox boundary.
+    """
+    load_dotenv()
+    result = queue_daily_brief()
+    print(f"Queued scheduled daily briefing for chat {result.chat_id}")
+    if result.display_result.ok:
+        print(f"display ok: {result.display_result.target}")
+    else:
+        print(f"display failed: {result.display_result.target}: {result.display_result.error}")
+        if result.display_result.frame_path:
+            print(f"frame saved: {result.display_result.frame_path}")
 
-	# use your houselholds tiem zone
-	tz = ZoneInfo("America/Chicago")
-	today = datetime.now(tz).replace(
-		hour=0,
-		minute=0,
-		second=0,
-		microsecond=0,
-	)
-
-	print(f"Sending scheduled daily briefing for {today.date()}...")
-
-	try:
-		result = send_daily_briefing(chat_id, today)
-		print("Result:", result)
-	except Exception as e:
-		print("error sending scheduled daily briefing:", e)
-		# let the process exit non-zero if something goes wrong
-		raise
 
 if __name__ == "__main__":
-	cron_daily_brief()
+    cron_daily_brief()
