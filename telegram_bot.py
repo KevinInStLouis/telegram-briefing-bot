@@ -77,8 +77,9 @@ def process_inbox_once(max_messages: int = 5000) -> None:
     """
     Read stored Telegram inbox messages and run deterministic Stevens commands.
 
-    This is the first vertical slice:
-      Telegram message -> SQLite chat history / memories -> outbox reply.
+    This is the current vertical slice:
+      Telegram message -> SQLite chat history / memories -> outbox reply
+      and selected commands -> compact display state.
     """
     state = _load_brain_state()
     last_update_id = int(state.get("last_update_id") or 0)
@@ -120,7 +121,7 @@ def process_inbox_once(max_messages: int = 5000) -> None:
             is_bot=False,
         )
 
-        result = handle_telegram_command(text)
+        result = handle_telegram_command(text, chat_id=chat_id_int)
         reply_text = result.text
 
         queue_outbox(chat_id=chat_id_int, text=reply_text, kind=result.kind)
