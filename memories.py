@@ -1,73 +1,178 @@
-# memory_store.py
+# memories.py
 from __future__ import annotations
 
-import os
-import logging
-from datetime import datetime
+import secrets
+import sqlite3
+import time
+from dataclasses import dataclass
+from datetime import date as Date
+from typing import Any
 
-DEBUG_LOG_PATH = os.path.expanduser("~/alfred/logs/watson_debug.log")
-MEMORY_PATH = os.path.expanduser("~/alfred/memory/watson_memory.txt")
-
-MEMORY_MAX_CHARS = 1000  # <- your requirement
-
-
-def _ensure_parent(path: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+from db import open_migrated_db
 
 
-def shorten(text: str, max_chars: int) -> str:
+@dataclass(frozen=True)
+class Memory:
+    id: str
+    date: str | None
+    text: str
+    tags: str | None
+    createdBy: str | None
+    createdDate: int
+
+
+def new_memory_id(length: int = 10) -> str:
+    """Generate a short URL-safe id similar in spirit to nanoid(10)."""
+    return secrets.token_urlsafe(length)[:length]
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _row_to_memory(row: sqlite3.Row) -> Memory:
+    return Memory(
+        id=str(row["id"]),
+        date=row["date"],
+        text=str(row["text"]),
+        tags=row["tags"],
+        createdBy=row["createdBy"],
+        createdDate=int(row["createdDate"] or 0),
+    )
+
+
+def create_memory(
+    text: str,
+    *,
+    date: str | Date | None = None,
+    tags: str | None = None,
+    created_by: str = "telegram",
+    memory_id: str | None = None,
+    created_date: int | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> Memory:
+    """Create one permanent notebook memory."""
+    text = " ".join((text or "").split())
     if not text:
-        return ""
-    text = " ".join(text.split())
-    if len(text) <= max_chars:
-        return text
-    cut = max_chars - 1
-    if cut <= 0:
-        return "…"
-    return text[:cut].rstrip(" ,.;:-") + "…"
+        raise ValueError("memory text cannot be empty")
 
+    if isinstance(date, Date):
+        date_text: str | None = date.isoformat()
+    else:
+        date_text = date
 
-def append_debug(user_text: str, full_reply: str) -> None:
-    """Append-only posterity log. Never used as memory."""
+    memory = Memory(
+        id=memory_id or new_memory_id(),
+        date=date_text,
+        text=text,
+        tags=tags,
+        createdBy=created_by,
+        createdDate=created_date or now_ms(),
+    )
+
+    should_close = conn is None
+    conn = conn or open_migrated_db()
     try:
-        _ensure_parent(DEBUG_LOG_PATH)
-        ts = datetime.now().isoformat(timespec="seconds")
-        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(f"\n[{ts}] USER: {user_text}\n")
-            f.write(f"[{ts}] WATSON_FULL: {full_reply}\n")
-    except Exception:
-        logging.exception("Failed writing debug log")
+        conn.execute(
+            """
+            INSERT INTO memories (id, date, text, tags, createdBy, createdDate)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                memory.id,
+                memory.date,
+                memory.text,
+                memory.tags,
+                memory.createdBy,
+                memory.createdDate,
+            ),
+        )
+        conn.commit()
+        return memory
+    finally:
+        if should_close:
+            conn.close()
 
 
-def load_memory(max_chars: int = MEMORY_MAX_CHARS) -> str:
-    """Return the rolling memory string (<= max_chars)."""
+def list_memories(
+    *,
+    limit: int = 20,
+    tag: str | None = None,
+    created_by: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> list[Memory]:
+    """Return recent memories from Stevens' permanent notebook."""
+    limit = max(1, min(int(limit), 100))
+    where: list[str] = []
+    params: list[Any] = []
+
+    if tag:
+        where.append("tags LIKE ?")
+        params.append(f"%{tag}%")
+    if created_by:
+        where.append("createdBy = ?")
+        params.append(created_by)
+
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+
+    should_close = conn is None
+    conn = conn or open_migrated_db()
     try:
-        with open(MEMORY_PATH, "r", encoding="utf-8") as f:
-            data = f.read()
-    except FileNotFoundError:
-        return ""
-    except Exception:
-        logging.exception("Failed reading memory")
-        return ""
-    return data[-max_chars:] if len(data) > max_chars else data
+        rows = conn.execute(
+            f"""
+            SELECT id, date, text, tags, createdBy, createdDate
+            FROM memories
+            {where_sql}
+            ORDER BY createdDate DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        ).fetchall()
+        return [_row_to_memory(row) for row in rows]
+    finally:
+        if should_close:
+            conn.close()
 
 
-def update_memory(user_text: str, short_reply: str) -> None:
-    """
-    Append a compact line to memory, then trim to last MEMORY_MAX_CHARS.
-    Memory is just a single rolling string.
-    """
+def get_memory(memory_id: str, *, conn: sqlite3.Connection | None = None) -> Memory | None:
+    should_close = conn is None
+    conn = conn or open_migrated_db()
     try:
-        _ensure_parent(MEMORY_PATH)
-        ts = datetime.now().isoformat(timespec="seconds")
+        row = conn.execute(
+            """
+            SELECT id, date, text, tags, createdBy, createdDate
+            FROM memories
+            WHERE id = ?
+            """,
+            (memory_id,),
+        ).fetchone()
+        return _row_to_memory(row) if row else None
+    finally:
+        if should_close:
+            conn.close()
 
-        current = load_memory(max_chars=MEMORY_MAX_CHARS)
-        new_entry = f"\n[{ts}] U: {user_text}\n[{ts}] W: {short_reply}\n"
 
-        combined = (current + new_entry)
-        combined = combined[-MEMORY_MAX_CHARS:] if len(combined) > MEMORY_MAX_CHARS else combined
+def delete_memory(memory_id: str, *, conn: sqlite3.Connection | None = None) -> bool:
+    should_close = conn is None
+    conn = conn or open_migrated_db()
+    try:
+        cur = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        if should_close:
+            conn.close()
 
-        with open(MEMORY_PATH, "w", encoding="utf-8") as f:
-            f.write(combined)
-    except Exception:
-        logging.exception("Failed updating memory")
+
+def format_memory_for_telegram(memory: Memory) -> str:
+    parts = [f"{memory.id}: {memory.text}"]
+    meta: list[str] = []
+    if memory.date:
+        meta.append(memory.date)
+    if memory.tags:
+        meta.append(memory.tags)
+    if memory.createdBy:
+        meta.append(memory.createdBy)
+    if meta:
+        parts.append(f"  ({', '.join(meta)})")
+    return "\n".join(parts)
