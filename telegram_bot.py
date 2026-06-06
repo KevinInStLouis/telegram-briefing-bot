@@ -1,21 +1,22 @@
 # telegram_bot.py
 from __future__ import annotations
 
-import os
 import json
-import asyncio
-from datetime import datetime, date
+import os
 from typing import Any
 
 from dotenv import load_dotenv
 
-from watson import watson_chat_reply, watson_hourly_brief
-from memory_store import shorten
+from chat_history import record_chat_message
+from telegram_commands import handle_telegram_command
 from telegram_store import queue_outbox
 
 BASE_DIR = os.path.expanduser(os.getenv("BOT_BASE_DIR", os.getcwd()))
 INBOX_PATH = os.path.join(BASE_DIR, "inbox.jsonl")
 BRAIN_STATE_PATH = os.path.join(BASE_DIR, "brain_state.json")
+
+BOT_SENDER_ID = "stevens"
+BOT_SENDER_NAME = "Stevens"
 
 
 def _load_brain_state() -> dict[str, Any]:
@@ -50,23 +51,34 @@ def _read_inbox() -> list[dict[str, Any]]:
         return []
     return items
 
-async def hourly_briefing(*, now: datetime) -> None:
 
-    today = now.date
-    hour = now.hour
-    # day + hour string
-    when_str = now.strftime("%A %Y-%m-%d %H:00")
+def _sender_id(message: dict[str, Any]) -> str:
+    raw = message.get("raw") or {}
+    msg = raw.get("message") or raw.get("edited_message") or {}
+    sender = msg.get("from") or {}
+    return str(sender.get("id") or message.get("from") or "unknown")
 
-    # THIS is what you were missing:
-    text = f"Hourly briefing for {when_str}"
-    brief = await watson_hourly_brief(text=text, today=today, hour=hour)
-    queue_outbox(chat_id=int(chat_id), text=brief)
-    return brief
 
-async def process_inbox_once(max_messages: int = 5000) -> None:
+def _sender_name(message: dict[str, Any]) -> str:
+    raw = message.get("raw") or {}
+    msg = raw.get("message") or raw.get("edited_message") or {}
+    sender = msg.get("from") or {}
+    username = sender.get("username")
+    first_name = sender.get("first_name")
+    last_name = sender.get("last_name")
+    if username:
+        return str(username)
+    if first_name or last_name:
+        return " ".join(part for part in [first_name, last_name] if part)
+    return str(message.get("from") or "unknown")
+
+
+def process_inbox_once(max_messages: int = 5000) -> None:
     """
-    Read stored inbound messages and generate outbound replies into outbox.
-    Marks progress by last_update_id in brain_state.json.
+    Read stored Telegram inbox messages and run deterministic Stevens commands.
+
+    This is the first vertical slice:
+      Telegram message -> SQLite chat history / memories -> outbox reply.
     """
     state = _load_brain_state()
     last_update_id = int(state.get("last_update_id") or 0)
@@ -76,7 +88,6 @@ async def process_inbox_once(max_messages: int = 5000) -> None:
         print("No inbox messages found.")
         return
 
-    # Only process messages newer than last_update_id
     new_msgs = [m for m in inbox if int(m.get("update_id") or 0) > last_update_id]
     new_msgs.sort(key=lambda x: int(x.get("update_id") or 0))
 
@@ -87,43 +98,53 @@ async def process_inbox_once(max_messages: int = 5000) -> None:
     processed = 0
     max_seen = last_update_id
 
-    for m in new_msgs:
+    for message in new_msgs:
         if processed >= max_messages:
             break
 
-        update_id = int(m.get("update_id") or 0)
-        chat_id = m.get("chat_id")
-        text = (m.get("text") or "").strip()
+        update_id = int(message.get("update_id") or 0)
+        chat_id = message.get("chat_id")
+        text = (message.get("text") or "").strip()
 
-        # Must have chat_id + text to respond
         if not chat_id or not text:
             max_seen = max(max_seen, update_id)
             continue
 
-        # 1) Call LLM
-        full_reply = await watson_chat_reply(text, today=date.today())
+        chat_id_int = int(chat_id)
 
-        # 2) Shorten for Telegram output (store in outbox)
-        reply = shorten(full_reply, max_chars=1000)  # adjust if you want 225
+        record_chat_message(
+            chat_id=chat_id_int,
+            sender_id=_sender_id(message),
+            sender_name=_sender_name(message),
+            message=text,
+            is_bot=False,
+        )
 
-        # 3) Queue outbound message
-        queue_outbox(chat_id=int(chat_id), text=full_reply)
+        result = handle_telegram_command(text)
+        reply_text = result.text
+
+        queue_outbox(chat_id=chat_id_int, text=reply_text, kind=result.kind)
+        record_chat_message(
+            chat_id=chat_id_int,
+            sender_id=BOT_SENDER_ID,
+            sender_name=BOT_SENDER_NAME,
+            message=reply_text,
+            is_bot=True,
+        )
 
         processed += 1
         max_seen = max(max_seen, update_id)
-        print(f"Processed update_id={update_id} -> queued reply ({len(reply)} chars)")
+        print(f"Processed update_id={update_id} -> queued {result.kind}")
 
-    # Save progress so we do not reprocess the same inbound messages
     state["last_update_id"] = max_seen
     _save_brain_state(state)
     print(f"Done. Processed={processed}. last_update_id={max_seen}")
 
 
 def main() -> None:
-    load_dotenv()  # reads .env if present; token used by telegram_pump, not needed here
-    now = datetime.now()
-    asyncio.run(process_inbox_once())
-    asyncio.run(hourly_briefing(now=now))
+    load_dotenv()
+    process_inbox_once()
+
 
 if __name__ == "__main__":
     main()
