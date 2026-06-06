@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from daily_brief import queue_daily_brief
 from display_sender import DisplaySendResult, send_display_state
 from display_state import memory_saved_state, status_state
 from memories import (
@@ -29,6 +30,7 @@ HELP_TEXT = """At your service. Current commands:
 /memories [limit] - show recent memories
 /memories weather - show weather memories
 /weather - import today's weather memory
+/brief - queue today's daily briefing
 /forget <id> - delete a memory
 /display - refresh the Pico display"""
 
@@ -81,13 +83,13 @@ def _weather_display_state(memory: Memory):
     )
 
 
-def handle_telegram_command(message: str) -> CommandResult:
+def handle_telegram_command(message: str, *, chat_id: int | None = None) -> CommandResult:
     """
     Handle Stevens' deterministic Telegram command layer.
 
     This is intentionally narrow. It proves Telegram -> SQLite -> Telegram,
-    Telegram -> compact display state, and deterministic importer -> memory
-    before local LLM behavior is reintroduced.
+    Telegram -> compact display state, deterministic importer -> memory, and
+    deterministic briefing -> outbox before local LLM behavior is reintroduced.
     """
     command, arg = _split_command(message)
 
@@ -96,7 +98,7 @@ def handle_telegram_command(message: str) -> CommandResult:
             handled=True,
             text=(
                 "I am presently operating in command mode. "
-                "Use /remember <text>, /memories, /weather, /forget <id>, /display, or /ping."
+                "Use /remember <text>, /memories, /weather, /brief, /forget <id>, /display, or /ping."
             ),
         )
 
@@ -140,6 +142,24 @@ def handle_telegram_command(message: str) -> CommandResult:
                 f"{_display_result_text(display_result)}"
             ),
             kind="weather_imported",
+        )
+
+    if command == "/brief":
+        try:
+            result = queue_daily_brief(chat_id=chat_id)
+        except Exception as exc:
+            return CommandResult(
+                handled=True,
+                text=f"Daily briefing failed: {exc}",
+                kind="daily_brief_failed",
+            )
+        return CommandResult(
+            handled=True,
+            text=(
+                "Daily briefing queued.\n\n"
+                f"{_display_result_text(result.display_result)}"
+            ),
+            kind="daily_brief_queued",
         )
 
     if command == "/memories":
