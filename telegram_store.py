@@ -5,6 +5,11 @@ import json
 import os
 from typing import Any
 
+from stevens_env import load_stevens_env
+
+
+load_stevens_env()
+
 BASE_DIR = os.path.expanduser(os.getenv("BOT_BASE_DIR", os.getcwd()))
 
 STATE_PATH = os.path.join(BASE_DIR, "telegram_state.json")
@@ -58,17 +63,17 @@ def write_outbox_all(items: list[dict[str, Any]]) -> None:
 
 
 def queue_outbox(
-    chat_id: int, 
-    text: str, 
+    chat_id: int,
+    text: str,
     parse_mode: str | None = None,
     kind: str | None = None,
 ) -> None:
     """
-    Append a messge to outbox.jsonl.
+    Append a message to outbox.jsonl.
     chat_id  - Telegram chat this should eventually be sent to
-    text     - full message text (we are no longer shortening)
-    parse_mode - optional Telegram parse_mode (for example MmarkDown)
-    kind     - optional logical typ, eg "chat_reply", "daily_brief"
+    text     - full message text
+    parse_mode - optional Telegram parse_mode
+    kind     - optional logical type, eg "chat_reply", "daily_brief"
     """
     items = read_outbox_all()
     obj: dict[str, Any] = {"chat_id": chat_id, "text": text}
